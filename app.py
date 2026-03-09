@@ -1,8 +1,8 @@
 """
 GA 시상 현황 — 대리점별 시책 파일 관리
 - 관리자: 대리점 선택 → 월/주차 선택 → 시상 파일(이미지) 등록
-- 조회(데스크탑): 대리점 검색 → 시상 파일 열람
-- 조회(모바일):   채팅형 인터페이스 → 섬네일 → 확대
+- 조회(데스크탑): 대리점 검색 → 월 선택 → 주차 선택 → 시상 파일 열람
+- 조회(모바일):   채팅형 인터페이스 → 월/주차 선택 → 섬네일 → 확대
 """
 
 import streamlit as st
@@ -35,11 +35,39 @@ def save_data(data: dict):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# ── 헬퍼: period_key에서 월/주차 파싱 ─────────────────────────
+def parse_period(period_key: str):
+    """'3월 2주차' → ('3월', '2주차')"""
+    parts = period_key.split(" ", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return period_key, ""
+
+def get_months_from_periods(period_keys: list) -> list:
+    """period_keys에서 중복 없이 월 목록 추출 (역순)"""
+    months = []
+    seen = set()
+    for pk in sorted(period_keys, reverse=True):
+        m, _ = parse_period(pk)
+        if m not in seen:
+            seen.add(m)
+            months.append(m)
+    return months
+
+def get_weeks_for_month(period_keys: list, month: str) -> list:
+    """특정 월에 해당하는 주차 목록 (역순)"""
+    weeks = []
+    for pk in sorted(period_keys, reverse=True):
+        m, w = parse_period(pk)
+        if m == month:
+            weeks.append(w)
+    return weeks
+
 # ── 세션 초기화 ───────────────────────────────────────────────
 for k, v in {
     "all_data": None, "page": "viewer", "admin_auth": False,
     # 모바일 채팅 상태
-    "m_search": "", "m_agent": None, "m_period": None, "m_expanded": False,
+    "m_search": "", "m_agent": None, "m_month": None, "m_week": None, "m_expanded": False,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -155,7 +183,8 @@ with st.sidebar:
         # 모바일 상태 초기화
         st.session_state.m_search = ""
         st.session_state.m_agent = None
-        st.session_state.m_period = None
+        st.session_state.m_month = None
+        st.session_state.m_week = None
         st.session_state.m_expanded = False
         st.rerun()
     if st.button("⚙️  관리자", use_container_width=True,
@@ -212,7 +241,17 @@ def page_viewer_desktop():
         st.info("등록된 시상 파일이 없습니다.")
         return
 
-    selected_period = st.selectbox("기간 선택", period_keys, key="viewer_period")
+    # ── 월 / 주차 2단계 선택 ───────────────────────────────────
+    available_months = get_months_from_periods(period_keys)
+
+    c_month, c_week = st.columns(2)
+    with c_month:
+        sel_month = st.selectbox("월 선택", available_months, key="viewer_month")
+    with c_week:
+        available_weeks = get_weeks_for_month(period_keys, sel_month)
+        sel_week = st.selectbox("주차 선택", available_weeks, key="viewer_week")
+
+    selected_period = f"{sel_month} {sel_week}"
     p_images = periods.get(selected_period, {}).get("images", [])
 
     st.markdown(f'<span class="period-tag" style="font-size:.95rem">{selected_period}</span>'
@@ -265,7 +304,8 @@ def page_viewer_mobile():
     if search_val.strip() and search_val.strip() != st.session_state.m_search:
         st.session_state.m_search = search_val.strip()
         st.session_state.m_agent = None
-        st.session_state.m_period = None
+        st.session_state.m_month = None
+        st.session_state.m_week = None
         st.session_state.m_expanded = False
         st.rerun()
 
@@ -288,13 +328,11 @@ def page_viewer_mobile():
             for name in matched:
                 if st.button(f"📋 {name}", key=f"m_sel_{name}", use_container_width=True):
                     st.session_state.m_agent = name
-                    # 자동으로 최신 기간 선택
-                    pkeys = sorted(
-                        all_data.get(name, {}).get("periods", {}).keys(), reverse=True)
-                    st.session_state.m_period = pkeys[0] if pkeys else None
+                    st.session_state.m_month = None
+                    st.session_state.m_week = None
                     st.rerun()
 
-    # STEP 2: 대리점 선택됨 → 기간 선택 + 섬네일
+    # STEP 2: 대리점 선택됨 → 월 선택 → 주차 선택 → 이미지
     if st.session_state.m_agent:
         agent = st.session_state.m_agent
         periods = all_data.get(agent, {}).get("periods", {})
@@ -307,22 +345,42 @@ def page_viewer_mobile():
             st.markdown('<div class="m-bubble-bot">등록된 시상 파일이 없습니다 📋</div>'
                         '<div class="m-clearfix"></div>', unsafe_allow_html=True)
         else:
-            # 기간 선택
-            st.markdown('<div class="m-bubble-bot">📅 기간을 선택하세요</div>'
+            available_months = get_months_from_periods(period_keys)
+
+            # ── 월 선택 ───────────────────────────────────────
+            st.markdown('<div class="m-bubble-bot">📅 월을 선택하세요</div>'
                         '<div class="m-clearfix"></div>', unsafe_allow_html=True)
 
-            period_cols = st.columns(min(len(period_keys), 3))
-            for i, pk in enumerate(period_keys):
-                with period_cols[i % 3]:
-                    btn_type = "primary" if st.session_state.m_period == pk else "secondary"
-                    if st.button(pk, key=f"m_period_{pk}", use_container_width=True, type=btn_type):
-                        st.session_state.m_period = pk
+            month_cols = st.columns(min(len(available_months), 4))
+            for i, mo in enumerate(available_months):
+                with month_cols[i % min(len(available_months), 4)]:
+                    btn_type = "primary" if st.session_state.m_month == mo else "secondary"
+                    if st.button(mo, key=f"m_month_{mo}", use_container_width=True, type=btn_type):
+                        st.session_state.m_month = mo
+                        st.session_state.m_week = None
                         st.session_state.m_expanded = False
                         st.rerun()
 
-            # 선택된 기간의 섬네일
-            if st.session_state.m_period:
-                sel_period = st.session_state.m_period
+            # ── 주차 선택 (월이 선택된 경우) ────────────────────
+            if st.session_state.m_month:
+                sel_month = st.session_state.m_month
+                available_weeks = get_weeks_for_month(period_keys, sel_month)
+
+                st.markdown(f'<div class="m-bubble-bot">📋 {sel_month} — 주차를 선택하세요</div>'
+                            f'<div class="m-clearfix"></div>', unsafe_allow_html=True)
+
+                week_cols = st.columns(min(len(available_weeks), 4))
+                for i, wk in enumerate(available_weeks):
+                    with week_cols[i % min(len(available_weeks), 4)]:
+                        btn_type = "primary" if st.session_state.m_week == wk else "secondary"
+                        if st.button(wk, key=f"m_week_{wk}", use_container_width=True, type=btn_type):
+                            st.session_state.m_week = wk
+                            st.session_state.m_expanded = False
+                            st.rerun()
+
+            # ── 이미지 표시 (월+주차 모두 선택된 경우) ──────────
+            if st.session_state.m_month and st.session_state.m_week:
+                sel_period = f"{st.session_state.m_month} {st.session_state.m_week}"
                 p_images = periods.get(sel_period, {}).get("images", [])
 
                 if p_images:
@@ -432,7 +490,8 @@ def page_viewer_mobile():
         if st.button("🔄 다른 대리점 검색", key="m_reset", use_container_width=True):
             st.session_state.m_search = ""
             st.session_state.m_agent = None
-            st.session_state.m_period = None
+            st.session_state.m_month = None
+            st.session_state.m_week = None
             st.session_state.m_expanded = False
             st.rerun()
 
