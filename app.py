@@ -3,15 +3,19 @@ GA 시상 현황 — 대리점별 시책 파일 관리
 - 관리자: 대리점 선택 → 월/주차 선택 → 시상 파일(이미지) 등록
 - 조회(데스크탑): 대리점 검색 → 월 선택 → 주차 선택 → 시상 파일 열람
 - 조회(모바일):   채팅형 인터페이스 → 월/주차 선택 → 섬네일 → 확대
+
+[리팩토링] 이미지를 JSON이 아닌 디스크 파일로 저장하여 성능 개선
 """
 
 import streamlit as st
-import json, os, copy, base64
+import json, os, copy, base64, shutil, hashlib, re
+from pathlib import Path
 from agents import AGENT_LIST
 
 # ── 설정 ─────────────────────────────────────────────────────
 ADMIN_PASSWORD = "meritz0505"
 DATA_FILE = "awards_data.json"
+IMAGES_DIR = "awards_images"          # 이미지 파일 저장 폴더
 MONTHS = [f"{m}월" for m in range(1, 13)]
 WEEKS = ["1주차", "2주차", "3주차", "4주차", "5주차"]
 
@@ -23,7 +27,61 @@ st.set_page_config(
 )
 
 # ══════════════════════════════════════════════════════════════
-# 데이터 I/O
+# 이미지 파일 I/O 헬퍼
+# ══════════════════════════════════════════════════════════════
+def _safe_dirname(name: str) -> str:
+    """파일시스템에 안전한 디렉토리명으로 변환"""
+    return re.sub(r'[<>:"/\\|?*]', '_', name).strip()
+
+def _img_dir(agent: str, period_key: str) -> Path:
+    """대리점+기간별 이미지 디렉토리 경로"""
+    return Path(IMAGES_DIR) / _safe_dirname(agent) / _safe_dirname(period_key)
+
+def save_image_file(agent: str, period_key: str, filename: str, img_bytes: bytes) -> str:
+    """이미지를 디스크에 저장하고 상대 경로를 반환"""
+    d = _img_dir(agent, period_key)
+    d.mkdir(parents=True, exist_ok=True)
+    # 동일 이름 충돌 방지: 해시 prefix 추가
+    h = hashlib.md5(img_bytes).hexdigest()[:8]
+    safe_name = _safe_dirname(filename)
+    dest = d / f"{h}_{safe_name}"
+    dest.write_bytes(img_bytes)
+    return str(dest)
+
+def load_image_b64(path: str) -> str | None:
+    """디스크에서 이미지를 읽어 base64 문자열로 반환"""
+    try:
+        return base64.standard_b64encode(Path(path).read_bytes()).decode("utf-8")
+    except Exception:
+        return None
+
+def load_image_bytes(path: str) -> bytes | None:
+    """디스크에서 이미지를 읽어 bytes로 반환"""
+    try:
+        return Path(path).read_bytes()
+    except Exception:
+        return None
+
+def delete_image_file(path: str):
+    """디스크에서 이미지 파일 삭제"""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def delete_agent_images(agent: str):
+    """대리점 전체 이미지 폴더 삭제"""
+    d = Path(IMAGES_DIR) / _safe_dirname(agent)
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+
+def get_media_type(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+    return {"png": "image/png", "jpg": "image/jpeg",
+            "jpeg": "image/jpeg", "webp": "image/webp"}.get(ext, "image/png")
+
+# ══════════════════════════════════════════════════════════════
+# 데이터 I/O  (JSON에는 경로만 저장)
 # ══════════════════════════════════════════════════════════════
 def load_data() -> dict:
     if os.path.exists(DATA_FILE):
@@ -35,18 +93,34 @@ def save_data(data: dict):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def migrate_if_needed(data: dict) -> dict:
+    """기존 base64 인라인 데이터 → 파일 기반으로 마이그레이션"""
+    changed = False
+    for agent, agent_data in data.items():
+        if not isinstance(agent_data, dict) or "periods" not in agent_data:
+            continue
+        for pk, pd in agent_data["periods"].items():
+            for img in pd.get("images", []):
+                if "data" in img and "path" not in img:
+                    # base64 → 파일로 저장
+                    img_bytes = base64.standard_b64decode(img["data"])
+                    fname = img.get("name", "image.png")
+                    path = save_image_file(agent, pk, fname, img_bytes)
+                    img["path"] = path
+                    img["media_type"] = img.get("media_type", get_media_type(fname))
+                    del img["data"]
+                    changed = True
+    if changed:
+        save_data(data)
+    return data
+
 # ── 헬퍼: period_key에서 월/주차 파싱 ─────────────────────────
 def parse_period(period_key: str):
-    """'3월 2주차' → ('3월', '2주차')"""
     parts = period_key.split(" ", 1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return period_key, ""
+    return (parts[0], parts[1]) if len(parts) == 2 else (period_key, "")
 
 def get_months_from_periods(period_keys: list) -> list:
-    """period_keys에서 중복 없이 월 목록 추출 (역순)"""
-    months = []
-    seen = set()
+    months, seen = [], set()
     for pk in sorted(period_keys, reverse=True):
         m, _ = parse_period(pk)
         if m not in seen:
@@ -55,7 +129,6 @@ def get_months_from_periods(period_keys: list) -> list:
     return months
 
 def get_weeks_for_month(period_keys: list, month: str) -> list:
-    """특정 월에 해당하는 주차 목록 (역순)"""
     weeks = []
     for pk in sorted(period_keys, reverse=True):
         m, w = parse_period(pk)
@@ -66,14 +139,14 @@ def get_weeks_for_month(period_keys: list, month: str) -> list:
 # ── 세션 초기화 ───────────────────────────────────────────────
 for k, v in {
     "all_data": None, "page": "viewer", "admin_auth": False,
-    # 모바일 채팅 상태
     "m_search": "", "m_agent": None, "m_month": None, "m_week": None, "m_expanded": False,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 if st.session_state.all_data is None:
-    st.session_state.all_data = load_data()
+    raw = load_data()
+    st.session_state.all_data = migrate_if_needed(raw)
 
 # ── 모바일 감지 ───────────────────────────────────────────────
 def _is_mobile() -> bool:
@@ -86,7 +159,7 @@ def _is_mobile() -> bool:
 IS_MOBILE = _is_mobile()
 
 # ══════════════════════════════════════════════════════════════
-# CSS
+# CSS  (변경 없음)
 # ══════════════════════════════════════════════════════════════
 BASE_CSS = """
 <style>
@@ -131,7 +204,6 @@ div[data-baseweb="select"]>div{border-radius:10px!important;font-weight:600!impo
 
 MOBILE_CSS = """
 <style>
-/* 모바일 채팅 전용 */
 .m-header{background:linear-gradient(135deg,#800000,#5a0000);
   border-radius:14px;padding:1rem 1.2rem;color:#fff;margin-bottom:1rem;text-align:center}
 .m-header-title{font-size:1.1rem;font-weight:800}
@@ -180,7 +252,6 @@ with st.sidebar:
     if st.button("🔍  시상 조회", use_container_width=True,
                  type="primary" if st.session_state.page == "viewer" else "secondary"):
         st.session_state.page = "viewer"
-        # 모바일 상태 초기화
         st.session_state.m_search = ""
         st.session_state.m_agent = None
         st.session_state.m_month = None
@@ -241,7 +312,6 @@ def page_viewer_desktop():
         st.info("등록된 시상 파일이 없습니다.")
         return
 
-    # ── 월 / 주차 2단계 선택 ───────────────────────────────────
     available_months = get_months_from_periods(period_keys)
 
     c_month, c_week = st.columns(2)
@@ -264,11 +334,11 @@ def page_viewer_desktop():
 
     for img_info in p_images:
         try:
-            b64 = img_info["data"]
+            b64 = load_image_b64(img_info["path"])
+            if not b64:
+                st.warning(f"이미지 파일을 찾을 수 없습니다: {img_info.get('name', '')}")
+                continue
             mt = img_info.get("media_type", "image/png")
-            if not mt or mt == "image/png":
-                ext = img_info.get("name", "x.png").rsplit(".", 1)[-1].lower()
-                mt = {"png":"image/png","jpg":"image/jpeg","jpeg":"image/jpeg","webp":"image/webp"}.get(ext, "image/png")
             st.markdown(f'<div class="viewer-img-wrap"><img src="data:{mt};base64,{b64}"></div>',
                         unsafe_allow_html=True)
             if img_info.get("name"):
@@ -287,19 +357,15 @@ def page_viewer_mobile():
     all_data = st.session_state.all_data
     registered = [k for k, v in all_data.items() if isinstance(v, dict) and v.get("periods")]
 
-    # ── 채팅 헤더 ──────────────────────────────────────────────
     st.markdown("""
     <div class="m-header">
         <div class="m-header-title">🏆 GA 시상 조회</div>
         <div class="m-header-sub">대리점명을 입력해 주세요</div>
     </div>""", unsafe_allow_html=True)
 
-    # ── 상단 검색 입력 ─────────────────────────────────────────
     search_val = st.text_input(
-        "대리점 검색",
-        placeholder="대리점명을 입력하세요 (예: 한국)",
-        key="m_search_input",
-        label_visibility="collapsed",
+        "대리점 검색", placeholder="대리점명을 입력하세요 (예: 한국)",
+        key="m_search_input", label_visibility="collapsed",
     )
     if search_val.strip() and search_val.strip() != st.session_state.m_search:
         st.session_state.m_search = search_val.strip()
@@ -309,9 +375,7 @@ def page_viewer_mobile():
         st.session_state.m_expanded = False
         st.rerun()
 
-    # ── 대화 렌더링 ────────────────────────────────────────────
-
-    # STEP 1: 검색어가 있으면 사용자 버블 + 매칭 결과
+    # STEP 1: 검색어 → 대리점 매칭
     if st.session_state.m_search:
         st.markdown(f'<div class="m-bubble-user">{st.session_state.m_search}</div>'
                     f'<div class="m-clearfix"></div>', unsafe_allow_html=True)
@@ -322,7 +386,6 @@ def page_viewer_mobile():
             st.markdown('<div class="m-bubble-bot">검색 결과가 없습니다. 다시 입력해 주세요 😅</div>'
                         '<div class="m-clearfix"></div>', unsafe_allow_html=True)
         elif st.session_state.m_agent is None:
-            # 매칭된 대리점 목록 표시
             st.markdown('<div class="m-bubble-bot">아래에서 대리점을 선택해 주세요 👇</div>'
                         '<div class="m-clearfix"></div>', unsafe_allow_html=True)
             for name in matched:
@@ -332,7 +395,7 @@ def page_viewer_mobile():
                     st.session_state.m_week = None
                     st.rerun()
 
-    # STEP 2: 대리점 선택됨 → 월 선택 → 주차 선택 → 이미지
+    # STEP 2: 대리점 → 월 → 주차 → 이미지
     if st.session_state.m_agent:
         agent = st.session_state.m_agent
         periods = all_data.get(agent, {}).get("periods", {})
@@ -347,7 +410,6 @@ def page_viewer_mobile():
         else:
             available_months = get_months_from_periods(period_keys)
 
-            # ── 월 선택 ───────────────────────────────────────
             st.markdown('<div class="m-bubble-bot">📅 월을 선택하세요</div>'
                         '<div class="m-clearfix"></div>', unsafe_allow_html=True)
 
@@ -361,7 +423,6 @@ def page_viewer_mobile():
                         st.session_state.m_expanded = False
                         st.rerun()
 
-            # ── 주차 선택 (월이 선택된 경우) ────────────────────
             if st.session_state.m_month:
                 sel_month = st.session_state.m_month
                 available_weeks = get_weeks_for_month(period_keys, sel_month)
@@ -378,7 +439,7 @@ def page_viewer_mobile():
                             st.session_state.m_expanded = False
                             st.rerun()
 
-            # ── 이미지 표시 (월+주차 모두 선택된 경우) ──────────
+            # ── 이미지 표시 ────────────────────────────────────
             if st.session_state.m_month and st.session_state.m_week:
                 sel_period = f"{st.session_state.m_month} {st.session_state.m_week}"
                 p_images = periods.get(sel_period, {}).get("images", [])
@@ -389,54 +450,47 @@ def page_viewer_mobile():
                     if not is_expanded:
                         st.markdown(f'<div class="m-bubble-bot">'
                                     f'<b>{sel_period}</b> 시상 파일 ({len(p_images)}장)</div>'
-                                    f'<div class="m-clearfix"></div>',
-                                    unsafe_allow_html=True)
+                                    f'<div class="m-clearfix"></div>', unsafe_allow_html=True)
 
-                        # 섬네일 그리드 (2열)
                         thumb_cols = st.columns(2)
                         for idx, img_info in enumerate(p_images):
                             with thumb_cols[idx % 2]:
-                                try:
-                                    img_bytes = base64.standard_b64decode(img_info["data"])
+                                img_bytes = load_image_bytes(img_info["path"])
+                                if img_bytes:
                                     st.image(img_bytes, use_container_width=True)
-                                except Exception:
-                                    pass
 
-                        # 크게 보기 버튼
                         if st.button("🔍 탭하면 크게 볼 수 있어요", key="m_toggle_expand",
                                      use_container_width=True):
                             st.session_state.m_expanded = True
                             st.rerun()
-
                     else:
                         st.markdown(f'<div class="m-bubble-bot">'
                                     f'<b>{sel_period}</b> 시상 파일 ({len(p_images)}장)</div>'
-                                    f'<div class="m-clearfix"></div>',
-                                    unsafe_allow_html=True)
+                                    f'<div class="m-clearfix"></div>', unsafe_allow_html=True)
 
-                        # 접기 버튼
                         if st.button("🔽 섬네일로 줄이기", key="m_toggle_collapse",
                                      use_container_width=True):
                             st.session_state.m_expanded = False
                             st.rerun()
 
-                        # 전체 크기 이미지
                         for idx, img_info in enumerate(p_images):
-                            try:
-                                b64 = img_info["data"]
+                            b64 = load_image_b64(img_info["path"])
+                            if b64:
                                 mt = img_info.get("media_type", "image/png")
                                 st.markdown(
                                     f'<div class="m-full-img">'
                                     f'<img src="data:{mt};base64,{b64}"></div>',
                                     unsafe_allow_html=True)
-                            except Exception:
-                                pass
 
-                    # 카톡 공유 버튼 (Web Share API)
-                    img_data_js = ",".join(
-                        f'"data:{img.get("media_type","image/png")};base64,{img["data"]}"'
-                        for img in p_images
-                    )
+                    # 카톡 공유 버튼
+                    img_data_js_parts = []
+                    for img in p_images:
+                        b64 = load_image_b64(img["path"])
+                        if b64:
+                            mt = img.get("media_type", "image/png")
+                            img_data_js_parts.append(f'"data:{mt};base64,{b64}"')
+                    img_data_js = ",".join(img_data_js_parts)
+
                     share_html = f"""
                     <button id="shareBtn" style="
                         width:100%;padding:.75rem;margin:.6rem 0;
@@ -485,7 +539,6 @@ def page_viewer_mobile():
                     st.markdown(f'<div class="m-bubble-bot">{sel_period}에 등록된 파일이 없습니다</div>'
                                 f'<div class="m-clearfix"></div>', unsafe_allow_html=True)
 
-    # ── 새 검색 안내 ──────────────────────────────────────────
     if st.session_state.m_agent:
         if st.button("🔄 다른 대리점 검색", key="m_reset", use_container_width=True):
             st.session_state.m_search = ""
@@ -543,14 +596,33 @@ def page_admin():
         with bc1:
             st.markdown("**📥 백업 다운로드**")
             st.caption("모든 대리점 데이터 다운로드 (이미지 포함)")
-            backup_json = json.dumps(st.session_state.all_data, ensure_ascii=False, indent=2)
-            st.download_button(
-                label="📥 전체 백업 다운로드",
-                data=backup_json.encode("utf-8"),
-                file_name="ga_awards_backup.json",
-                mime="application/json",
-                use_container_width=True, key="backup_download",
-            )
+
+            # 백업 시 이미지를 base64로 인라인 — 기존 형식 호환
+            if st.button("📥 백업 파일 생성", use_container_width=True, key="backup_gen"):
+                with st.spinner("백업 파일 생성 중..."):
+                    backup = copy.deepcopy(st.session_state.all_data)
+                    for ag, ag_data in backup.items():
+                        if not isinstance(ag_data, dict) or "periods" not in ag_data:
+                            continue
+                        for pk, pd in ag_data["periods"].items():
+                            for img in pd.get("images", []):
+                                if "path" in img:
+                                    b64 = load_image_b64(img["path"])
+                                    if b64:
+                                        img["data"] = b64
+                                    del img["path"]
+                    backup_json = json.dumps(backup, ensure_ascii=False, indent=2)
+                    st.session_state["_backup_json"] = backup_json
+
+            if st.session_state.get("_backup_json"):
+                st.download_button(
+                    label="💾 다운로드",
+                    data=st.session_state["_backup_json"].encode("utf-8"),
+                    file_name="ga_awards_backup.json",
+                    mime="application/json",
+                    use_container_width=True, key="backup_download",
+                )
+
             agent_count = len([k for k, v in st.session_state.all_data.items()
                                if isinstance(v, dict) and v.get("periods")])
             st.caption(f"등록 대리점: {agent_count}곳")
@@ -567,8 +639,11 @@ def page_admin():
                     st.info(f"📋 {restore_count}개 대리점 데이터 감지")
                     if st.button("⚠️ 복원 실행", use_container_width=True,
                                  type="primary", key="restore_btn"):
-                        st.session_state.all_data = restore_data
-                        save_data(restore_data)
+                        with st.spinner("복원 중... (이미지 파일 변환)"):
+                            # base64 → 파일 저장으로 마이그레이션
+                            restored = migrate_if_needed(restore_data)
+                            st.session_state.all_data = restored
+                            save_data(restored)
                         st.success(f"✅ 복원 완료! ({restore_count}개 대리점)")
                         st.rerun()
                 except json.JSONDecodeError:
@@ -614,11 +689,14 @@ def page_admin():
             already = any(img.get("file_id") == file_id for img in existing_images)
             if not already:
                 img_bytes = uf.read(); uf.seek(0)
-                ext = uf.name.rsplit(".", 1)[-1].lower() if "." in uf.name else "png"
-                mt = {"png":"image/png","jpg":"image/jpeg","jpeg":"image/jpeg","webp":"image/webp"}.get(ext, "image/png")
+                # 디스크에 저장
+                path = save_image_file(agent, period_key, uf.name, img_bytes)
+                mt = get_media_type(uf.name)
                 existing_images.append({
-                    "data": base64.standard_b64encode(img_bytes).decode("utf-8"),
-                    "media_type": mt, "name": uf.name, "file_id": file_id,
+                    "path": path,
+                    "media_type": mt,
+                    "name": uf.name,
+                    "file_id": file_id,
                 })
 
     # ── 저장 함수 ──────────────────────────────────────────────
@@ -639,15 +717,16 @@ def page_admin():
         for idx, img_info in enumerate(existing_images):
             col_img, col_del = st.columns([6, 1])
             with col_img:
-                try:
-                    img_bytes = base64.standard_b64decode(img_info["data"])
+                img_bytes = load_image_bytes(img_info.get("path", ""))
+                if img_bytes:
                     st.image(img_bytes, caption=img_info.get("name", ""),
                              use_container_width=True)
-                except Exception:
-                    st.warning(f"이미지 로드 실패")
+                else:
+                    st.warning("이미지 파일을 찾을 수 없습니다")
             with col_del:
                 st.markdown("<div style='height:2rem'></div>", unsafe_allow_html=True)
                 if st.button("🗑", key=f"del_img_{idx}_{period_key}"):
+                    delete_image_file(img_info.get("path", ""))
                     existing_images.pop(idx)
                     st.rerun()
     else:
@@ -675,6 +754,7 @@ def page_admin():
         st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
         if st.button("🗑 이 대리점 전체 데이터 삭제", key="del_all_agent"):
             if agent in st.session_state.all_data:
+                delete_agent_images(agent)          # 이미지 파일도 삭제
                 del st.session_state.all_data[agent]
                 save_data(st.session_state.all_data)
                 st.success(f"'{agent}' 전체 데이터가 삭제되었습니다.")
