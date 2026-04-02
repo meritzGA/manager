@@ -1,6 +1,7 @@
 streamlit
 pandas
 openpyxl
+pillow
 numpy
 streamlit>=1.32.0
 pandas>=2.0.0
