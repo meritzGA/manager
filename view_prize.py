@@ -7,7 +7,7 @@ from PIL import Image
 # ── 경로 설정 (repo 기준) ──
 BASE_DIR = Path(__file__).resolve().parent
 MAPPING_FILE = BASE_DIR / "mapping.json"
-IMG_ROOT = BASE_DIR / "시상"
+IMG_ROOT = BASE_DIR / "prize"
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 
@@ -129,7 +129,7 @@ def main():
 
     weeks = list_weeks()
     if not weeks:
-        st.error("`시상/` 폴더가 없거나 주차 폴더가 비어있습니다.")
+        st.error("`prize/` 폴더가 없거나 주차 폴더가 비어있습니다.")
         st.stop()
 
     # ── 주차 선택 + 검색 ──
@@ -157,7 +157,7 @@ def main():
     groups, unmatched = scan_and_group(target, mapping)
 
     if not groups and not unmatched:
-        st.warning(f"이미지 파일이 없습니다: `시상/{selected_week}/`")
+        st.warning(f"이미지 파일이 없습니다: `prize/{selected_week}/`")
         st.stop()
 
     # ── 검색 필터 ──
