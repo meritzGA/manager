@@ -7,7 +7,7 @@ from PIL import Image
 # ── 경로 설정 (repo 기준) ──
 BASE_DIR = Path(__file__).resolve().parent
 MAPPING_FILE = BASE_DIR / "mapping.json"
-IMG_ROOT = BASE_DIR / "prize"
+IMG_ROOT = BASE_DIR / "시상"
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 
@@ -129,27 +129,14 @@ def main():
 
     weeks = list_weeks()
     if not weeks:
-        st.error("`prize/` 폴더가 없거나 주차 폴더가 비어있습니다.")
+        st.error("`시상/` 폴더가 없거나 주차 폴더가 비어있습니다.")
         st.stop()
 
-    # ── 주차 선택 + 검색 ──
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        selected_week = st.selectbox(
-            "📅 주차",
-            options=weeks,
-            index=len(weeks) - 1,
-        )
-    with c2:
-        search = st.text_input(
-            "🔍 대리점 검색",
-            placeholder="대리점명 입력 (예: 에이플러스, 인카, 프라임...)",
-        )
-
-    st.markdown(
-        f'<div style="text-align:center; margin: 8px 0 16px;">'
-        f'<span class="week-badge">{selected_week}</span></div>',
-        unsafe_allow_html=True,
+    # ── 주차 선택 ──
+    selected_week = st.selectbox(
+        "📅 주차",
+        options=weeks,
+        index=len(weeks) - 1,
     )
 
     # ── 스캔 ──
@@ -157,61 +144,49 @@ def main():
     groups, unmatched = scan_and_group(target, mapping)
 
     if not groups and not unmatched:
-        st.warning(f"이미지 파일이 없습니다: `prize/{selected_week}/`")
+        st.warning(f"이미지 파일이 없습니다: `시상/{selected_week}/`")
         st.stop()
 
-    # ── 검색 필터 ──
-    if search:
-        groups = {
-            k: v for k, v in groups.items()
-            if search.lower() in k.lower()
-        }
+    agent_list = sorted(groups.keys())
 
-    total_agents = len(groups)
-    total_images = sum(len(v) for v in groups.values())
-    st.caption(f"대리점 {total_agents}개 · 이미지 {total_images}장")
+    # ── 대리점 선택 ──
+    selected_agent = st.selectbox(
+        "🏢 대리점 선택",
+        options=agent_list,
+        index=None,
+        placeholder="대리점을 선택하세요...",
+    )
 
-    if not groups:
-        st.info("검색 결과가 없습니다." if search else "매칭된 이미지가 없습니다.")
+    st.markdown(
+        f'<div style="text-align:center; margin: 8px 0 16px;">'
+        f'<span class="week-badge">{selected_week}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    if not selected_agent:
+        st.info(f"총 {len(agent_list)}개 대리점이 있습니다. 위에서 선택해주세요.")
         st.stop()
 
     # ══════════════════════════════════
-    #  대리점별 이미지
+    #  선택된 대리점 시상 표시
     # ══════════════════════════════════
-    for agent_name in sorted(groups.keys()):
-        images = groups[agent_name]
+    images = groups[selected_agent]
 
-        st.markdown(
-            f'<div class="agent-card">'
-            f'<div class="agent-name">🏢 {agent_name}'
-            f'<span style="float:right; color:#888; font-weight:normal; font-size:0.85em;">'
-            f'{len(images)}장</span></div></div>',
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        f'<div class="agent-card">'
+        f'<div class="agent-name">🏢 {selected_agent}'
+        f'<span style="float:right; color:#888; font-weight:normal; font-size:0.85em;">'
+        f'{len(images)}장</span></div></div>',
+        unsafe_allow_html=True,
+    )
 
-        if len(images) == 1:
-            try:
-                st.image(Image.open(images[0]["path"]), use_container_width=True)
-            except:
-                st.error(f"이미지 로드 실패: {images[0]['filename']}")
-        else:
-            cols = st.columns(min(len(images), 3))
-            for idx, img in enumerate(images):
-                with cols[idx % len(cols)]:
-                    try:
-                        st.image(Image.open(img["path"]), use_container_width=True)
-                    except:
-                        st.error(f"로드 실패: {img['filename']}")
-                    st.caption(img["filename"])
-
-        st.write("")
-
-    # ── 미매칭 ──
-    if unmatched and not search:
-        st.divider()
-        with st.expander(f"⚠️ 미매칭 파일 ({len(unmatched)})"):
-            for f in unmatched:
-                st.text(f"📄 {f['filename']}")
+    for img in images:
+        try:
+            st.image(Image.open(img["path"]), use_container_width=True)
+        except:
+            st.error(f"이미지 로드 실패: {img['filename']}")
+        if len(images) > 1:
+            st.caption(img["filename"])
 
 
 if __name__ == "__main__":
