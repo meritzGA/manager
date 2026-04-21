@@ -1,12 +1,15 @@
 import streamlit as st
 import json
 import re
+import io
 from pathlib import Path
 from PIL import Image
+import openpyxl
 
 # ── 경로 설정 (repo 기준) ──
 BASE_DIR = Path(__file__).resolve().parent
 MAPPING_FILE = BASE_DIR / "mapping.json"
+AGENT_XLSX = BASE_DIR / "agent.xlsx"
 IMG_ROOT = BASE_DIR / "prize"
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
@@ -37,6 +40,18 @@ def load_mapping_from_file():
     if MAPPING_FILE.exists():
         return json.loads(MAPPING_FILE.read_text(encoding="utf-8"))
     return {}
+
+@st.cache_data
+def load_agents(path):
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+    return [str(r[0]).strip() for r in ws.iter_rows(min_row=1, values_only=True) if r[0]]
+
+@st.cache_data
+def load_agents_from_bytes(data: bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    ws = wb.active
+    return [str(r[0]).strip() for r in ws.iter_rows(min_row=1, values_only=True) if r[0]]
 
 def get_mapping():
     """session_state에 매핑 유지 (수정사항 세션 내 보존)"""
@@ -144,6 +159,17 @@ st.markdown("""
 def main():
     mapping = get_mapping()
 
+    # ── 대리점 리스트 로드 ──
+    if AGENT_XLSX.exists():
+        agents = load_agents(str(AGENT_XLSX))
+    else:
+        st.sidebar.warning("`agent.xlsx`가 repo에 없습니다.")
+        uploaded_xlsx = st.sidebar.file_uploader("agent.xlsx 업로드", type=["xlsx"])
+        if uploaded_xlsx:
+            agents = load_agents_from_bytes(uploaded_xlsx.read())
+        else:
+            agents = sorted(set(mapping.values()))  # fallback
+
     # ── 헤더 ──
     header_extra = ""
     if st.session_state.get("mapping_modified"):
@@ -237,8 +263,8 @@ def main():
     #  매칭 수정 모드
     # ══════════════════════════════════
     else:
-        # 매핑에 등록된 모든 대리점명 수집
-        all_agents = sorted(set(mapping.values()))
+        # 대리점 전체 리스트 사용
+        all_agents = agents
 
         st.markdown(
             f"**`{selected_week}/`** — 이미지 {len(files)}개　"
