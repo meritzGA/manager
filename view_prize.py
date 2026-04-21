@@ -33,33 +33,54 @@ def find_match(stem, mapping):
     return None, None
 
 # ── 데이터 ──
-@st.cache_data
-def load_mapping():
+def load_mapping_from_file():
     if MAPPING_FILE.exists():
         return json.loads(MAPPING_FILE.read_text(encoding="utf-8"))
     return {}
+
+def get_mapping():
+    """session_state에 매핑 유지 (수정사항 세션 내 보존)"""
+    if "mapping" not in st.session_state:
+        st.session_state.mapping = load_mapping_from_file()
+        st.session_state.mapping_modified = False
+    return st.session_state.mapping
+
+def save_mapping_session(mapping):
+    st.session_state.mapping = mapping
+    st.session_state.mapping_modified = True
 
 def list_weeks():
     if not IMG_ROOT.is_dir():
         return []
     return sorted([d.name for d in IMG_ROOT.iterdir() if d.is_dir()])
 
-def scan_and_group(folder_path, mapping):
-    groups = {}
-    unmatched = []
+def scan_folder(folder_path):
+    """이미지 파일 리스트 반환"""
+    files = []
     p = Path(folder_path)
     if not p.is_dir():
-        return groups, unmatched
+        return files
     for f in sorted(p.iterdir()):
         if f.suffix.lower() not in IMG_EXTS:
             continue
         stem = f.stem
-        agent, _ = find_match(stem, mapping)
-        info = {"stem": stem, "filename": f.name, "path": str(f)}
+        files.append({
+            "stem": stem,
+            "base": get_base_stem(stem),
+            "filename": f.name,
+            "path": str(f),
+        })
+    return files
+
+def group_files(files, mapping):
+    groups = {}
+    unmatched = []
+    for f in files:
+        agent, _ = find_match(f["stem"], mapping)
         if agent:
-            groups.setdefault(agent, []).append(info)
+            groups.setdefault(agent, []).append(f)
         else:
-            unmatched.append(info)
+            unmatched.append(f)
     return groups, unmatched
 
 
@@ -108,21 +129,34 @@ st.markdown("""
         padding-bottom: 8px;
         border-bottom: 2px solid #2c5f8a;
     }
+    .modified-badge {
+        background: #ff9800;
+        color: white;
+        padding: 3px 10px;
+        border-radius: 10px;
+        font-size: 0.75em;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
 def main():
+    mapping = get_mapping()
+
     # ── 헤더 ──
+    header_extra = ""
+    if st.session_state.get("mapping_modified"):
+        header_extra = ' <span class="modified-badge">수정됨 — 다운로드 필요</span>'
+
     st.markdown(
         '<div class="title-bar">'
-        '<h1>📊 메리츠화재 대리점 시상 조회</h1>'
+        f'<h1>📊 메리츠화재 대리점 시상 조회{header_extra}</h1>'
         '<p>대리점별 주차 시상 현황</p>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    mapping = load_mapping()
     if not mapping:
         st.error("매핑 데이터(`mapping.json`)가 없습니다.")
         st.stop()
@@ -132,6 +166,16 @@ def main():
         st.error("`prize/` 폴더가 없거나 주차 폴더가 비어있습니다.")
         st.stop()
 
+    # ══════════════════════════════════
+    #  모드 선택
+    # ══════════════════════════════════
+    mode = st.radio(
+        "모드",
+        ["📊 조회", "🔧 매칭 수정"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
     # ── 주차 선택 ──
     selected_week = st.selectbox(
         "📅 주차",
@@ -139,54 +183,165 @@ def main():
         index=len(weeks) - 1,
     )
 
-    # ── 스캔 ──
     target = IMG_ROOT / selected_week
-    groups, unmatched = scan_and_group(target, mapping)
+    files = scan_folder(target)
 
-    if not groups and not unmatched:
+    if not files:
         st.warning(f"이미지 파일이 없습니다: `prize/{selected_week}/`")
         st.stop()
 
-    agent_list = sorted(groups.keys())
-
-    # ── 대리점 선택 ──
-    selected_agent = st.selectbox(
-        "🏢 대리점 선택",
-        options=agent_list,
-        index=None,
-        placeholder="대리점을 선택하세요...",
-    )
-
-    st.markdown(
-        f'<div style="text-align:center; margin: 8px 0 16px;">'
-        f'<span class="week-badge">{selected_week}</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    if not selected_agent:
-        st.info(f"총 {len(agent_list)}개 대리점이 있습니다. 위에서 선택해주세요.")
-        st.stop()
+    groups, unmatched = group_files(files, mapping)
 
     # ══════════════════════════════════
-    #  선택된 대리점 시상 표시
+    #  조회 모드
     # ══════════════════════════════════
-    images = groups[selected_agent]
+    if mode == "📊 조회":
+        agent_list = sorted(groups.keys())
 
-    st.markdown(
-        f'<div class="agent-card">'
-        f'<div class="agent-name">🏢 {selected_agent}'
-        f'<span style="float:right; color:#888; font-weight:normal; font-size:0.85em;">'
-        f'{len(images)}장</span></div></div>',
-        unsafe_allow_html=True,
-    )
+        selected_agent = st.selectbox(
+            "🏢 대리점 선택",
+            options=agent_list,
+            index=None,
+            placeholder="대리점을 선택하세요...",
+        )
 
-    for img in images:
-        try:
-            st.image(Image.open(img["path"]), use_container_width=True)
-        except:
-            st.error(f"이미지 로드 실패: {img['filename']}")
-        if len(images) > 1:
-            st.caption(img["filename"])
+        st.markdown(
+            f'<div style="text-align:center; margin: 8px 0 16px;">'
+            f'<span class="week-badge">{selected_week}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        if not selected_agent:
+            st.info(f"총 {len(agent_list)}개 대리점이 있습니다. 위에서 선택해주세요.")
+            st.stop()
+
+        images = groups[selected_agent]
+
+        st.markdown(
+            f'<div class="agent-card">'
+            f'<div class="agent-name">🏢 {selected_agent}'
+            f'<span style="float:right; color:#888; font-weight:normal; font-size:0.85em;">'
+            f'{len(images)}장</span></div></div>',
+            unsafe_allow_html=True,
+        )
+
+        for img in images:
+            try:
+                st.image(Image.open(img["path"]), use_container_width=True)
+            except:
+                st.error(f"이미지 로드 실패: {img['filename']}")
+            if len(images) > 1:
+                st.caption(img["filename"])
+
+    # ══════════════════════════════════
+    #  매칭 수정 모드
+    # ══════════════════════════════════
+    else:
+        # 매핑에 등록된 모든 대리점명 수집
+        all_agents = sorted(set(mapping.values()))
+
+        st.markdown(
+            f"**`{selected_week}/`** — 이미지 {len(files)}개　"
+            f"매칭 {len(files) - len(unmatched)}개　"
+            f"미매칭 {len(unmatched)}개"
+        )
+
+        # ── 미매칭 먼저 ──
+        if unmatched:
+            st.warning(f"❓ 미매칭 {len(unmatched)}개")
+            already = set(mapping.values())
+
+            for f in unmatched:
+                st.divider()
+                c1, c2, c3 = st.columns([1, 3, 2])
+                with c1:
+                    try:
+                        st.image(Image.open(f["path"]), width=150)
+                    except:
+                        st.text("(미리보기 불가)")
+                with c2:
+                    st.markdown(f"**📄 `{f['filename']}`**")
+                    save_key = f["stem"]
+                    if f["base"]:
+                        suffix = f["stem"][len(f["base"]):]
+                        st.caption(f"베이스명: **{f['base']}** · 접미사: `{suffix}`")
+                        save_key = f["base"]
+                    else:
+                        st.caption(f"파일명: **{f['stem']}**")
+                with c3:
+                    sel = st.selectbox(
+                        "대리점",
+                        ["-- 선택 --"] + all_agents,
+                        key=f"new_{f['stem']}",
+                        label_visibility="collapsed",
+                    )
+                    if st.button("✅ 매칭", key=f"sv_{f['stem']}", type="primary"):
+                        if sel != "-- 선택 --":
+                            mapping[save_key] = sel
+                            save_mapping_session(mapping)
+                            st.rerun()
+                        else:
+                            st.error("대리점을 선택해주세요.")
+
+        # ── 매칭 완료 항목 ──
+        st.divider()
+        st.markdown(f"**🔗 매칭 완료 ({len(files) - len(unmatched)})**")
+
+        for f in files:
+            agent, matched_key = find_match(f["stem"], mapping)
+            if not agent:
+                continue
+
+            c1, c2, c3, c4 = st.columns([1, 2, 3, 1])
+            with c1:
+                try:
+                    st.image(Image.open(f["path"]), width=100)
+                except:
+                    st.text("(미리보기 불가)")
+            with c2:
+                st.markdown(f"**{f['filename']}**")
+                suffix = ""
+                if matched_key != f["stem"]:
+                    suffix = f["stem"][len(matched_key):]
+                if suffix:
+                    st.caption(f"베이스: `{matched_key}` · 접미사: `{suffix}`")
+            with c3:
+                current_idx = all_agents.index(agent) + 1 if agent in all_agents else 0
+                new_sel = st.selectbox(
+                    "대리점",
+                    ["-- 선택 --"] + all_agents,
+                    index=current_idx,
+                    key=f"edit_{f['stem']}",
+                    label_visibility="collapsed",
+                )
+            with c4:
+                changed = new_sel != agent and new_sel != "-- 선택 --"
+                if changed:
+                    if st.button("💾 변경", key=f"chg_{f['stem']}", type="primary"):
+                        mapping[matched_key] = new_sel
+                        save_mapping_session(mapping)
+                        st.rerun()
+                else:
+                    if st.button("🗑 해제", key=f"un_{f['stem']}"):
+                        del mapping[matched_key]
+                        save_mapping_session(mapping)
+                        st.rerun()
+            st.divider()
+
+        # ── 수정사항 다운로드 ──
+        if st.session_state.get("mapping_modified"):
+            st.markdown("---")
+            st.warning(
+                "매핑이 수정되었습니다. 아래에서 `mapping.json`을 다운로드하고 "
+                "GitHub repo에 업로드(덮어쓰기)해주세요."
+            )
+            st.download_button(
+                "⬇️ mapping.json 다운로드",
+                data=json.dumps(mapping, ensure_ascii=False, indent=2),
+                file_name="mapping.json",
+                mime="application/json",
+                type="primary",
+            )
 
 
 if __name__ == "__main__":
