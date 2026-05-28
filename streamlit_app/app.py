@@ -144,9 +144,11 @@ with col_m:
         key="month_sel",
     )
 
+# 최신 주차가 맨 위로 오도록 내림차순 (예: 5주차, 4주차, 3주차...)
 weeks = sorted(
     catalog[selected_month].keys(),
     key=lambda w: int(w.replace("주차", "")),
+    reverse=True,
 )
 with col_w:
     selected_week = st.selectbox("주차", weeks, key="week_sel")
