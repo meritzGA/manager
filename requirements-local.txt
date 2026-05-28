@@ -1,0 +1,7 @@
+# 로컬 PC에서 매칭 스크립트를 돌릴 때만 필요한 패키지
+# Streamlit Cloud에는 불필요 (Cloud는 requirements.txt 만 사용)
+easyocr>=1.7
+rapidfuzz>=3.0
+Pillow>=10.0
+numpy>=1.24
+openpyxl>=3.1

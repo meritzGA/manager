@@ -1,0 +1,28 @@
+# 원본 시책 폴더 (대용량 + 정리 안된 상태) - GitHub에 푸시하지 않음
+# 정리된 결과는 organized/ 폴더에 별도 보관되며 그것만 푸시됨
+/2[0-9][0-9][0-9]_[0-9]*/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# EasyOCR 모델 캐시 (크기 큼, 자동 다운로드됨)
+.EasyOCR/
+
+# 임시
+*.tmp
+*.log
