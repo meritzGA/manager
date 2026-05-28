@@ -1,67 +1,69 @@
 # -*- coding: utf-8 -*-
 """
-주간 시책 조회 Streamlit 앱
-==========================
-
-월 / 주차 / 대리점을 선택하면 해당 시책 이미지를 보여주는 앱.
-GitHub 저장소의 organized/ 폴더 구조를 그대로 읽음.
-
-폴더 구조:
-    organized/
-        2604_1/   ← 26년 4월 1주차
-            굿리치_1.jpg
-            굿리치_2.jpg
-            에이플러스에셋_1.png
-            ...
-        2605_3/
-            ...
-
-실행:
-    streamlit run streamlit_app/app.py
+주간 시책 조회 Streamlit 앱.
+월/주차/대리점을 선택하면 organized/ 폴더의 시책 이미지를 보여줍니다.
+모바일 친화: 사이드바 대신 상단에 필터 배치.
 """
 
 import streamlit as st
 from pathlib import Path
 import re
+import json
 from collections import defaultdict
 
-# ----------------------------------------------------------
-# 경로 - GitHub 저장소 루트 기준
-# ----------------------------------------------------------
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 ORGANIZED_DIR = ROOT_DIR / "organized"
+DATA_DIR = ROOT_DIR / "data"
 
-# ----------------------------------------------------------
-# 페이지 설정
-# ----------------------------------------------------------
 st.set_page_config(
     page_title="주간 시책 조회",
     page_icon="📋",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
+# CSS: 모바일에서 컬럼 간격 줄이고, 사이드바 토글 숨김
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] { display: none; }
+button[kind="header"] { display: none; }
+.block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+@media (max-width: 640px) {
+  .block-container { padding-left: 0.6rem; padding-right: 0.6rem; }
+}
+</style>
+""", unsafe_allow_html=True)
 
-# ----------------------------------------------------------
-# 데이터 로드
-# ----------------------------------------------------------
 WEEK_PATTERN = re.compile(r"^(\d{2})(\d{2})_(\d+)$")
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 
 @st.cache_data(show_spinner=False)
-def scan_organized():
-    """
-    organized/ 폴더 스캔.
-    반환 구조:
-      { '2026-04': { '1주차': { '대리점명': [Path, Path, ...], ... }, ... }, ... }
-    """
-    catalog = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+def load_agency_map():
+    """짧은 별칭 -> full_name 매핑 + full_name 정렬 리스트 반환."""
+    p = DATA_DIR / "agencies.json"
+    if not p.exists():
+        return {}, []
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    alias_to_full = {}
+    full_names = []
+    for a in data:
+        full = a.get("full_name", "")
+        full_names.append(full)
+        for al in a.get("aliases", []):
+            alias_to_full.setdefault(al, full)
+            alias_to_full.setdefault(al.lower(), full)
+    return alias_to_full, sorted(full_names)
 
+
+@st.cache_data(show_spinner=False)
+def scan_organized():
+    """organized/ 폴더 스캔. 파일명에서 추출한 short name 기준으로 그룹화."""
+    catalog = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     if not ORGANIZED_DIR.exists():
         return {}
-
     for week_dir in sorted(ORGANIZED_DIR.iterdir()):
         if not week_dir.is_dir():
             continue
@@ -69,117 +71,130 @@ def scan_organized():
         if not m:
             continue
         yy, mm, ww = m.group(1), m.group(2), m.group(3)
-        year_month_key = f"20{yy}-{mm}"
-        week_key = f"{int(ww)}주차"
-
+        ym_key = "20" + yy + "-" + mm
+        wk_key = str(int(ww)) + "주차"
         for f in sorted(week_dir.iterdir()):
             if not f.is_file() or f.suffix.lower() not in IMG_EXTS:
                 continue
-            # 파일명에서 대리점명 추출: 대리점명_N.확장자
             stem = f.stem
             mname = re.match(r"^(.+?)(?:_(\d+))?$", stem)
-            agency_name = mname.group(1) if mname else stem
-            catalog[year_month_key][week_key][agency_name].append(f)
-
-    # defaultdict → dict 변환
+            short_name = mname.group(1) if mname else stem
+            catalog[ym_key][wk_key][short_name].append(f)
     return {ym: {w: dict(ags) for w, ags in wks.items()} for ym, wks in catalog.items()}
+
+
+def short_to_full(short, alias_map):
+    """파일명 기반 short name을 가능한 한 full_name으로 변환."""
+    if not short:
+        return short
+    if short in alias_map:
+        return alias_map[short]
+    if short.lower() in alias_map:
+        return alias_map[short.lower()]
+    # 못 찾으면 그대로 반환
+    return short
 
 
 def reload_catalog():
     scan_organized.clear()
+    load_agency_map.clear()
 
 
-# ----------------------------------------------------------
-# UI
-# ----------------------------------------------------------
+# ===== UI =====
 st.title("📋 주간 시책 조회")
-st.caption("월 → 주차 → 대리점을 선택하면 시책 이미지를 볼 수 있어요.")
 
 catalog = scan_organized()
+alias_map, _ = load_agency_map()
 
 if not catalog:
-    st.warning(
-        "정리된 시책 데이터가 없습니다.\n\n"
-        "프로젝트 폴더에서 다음 명령을 실행하세요:\n"
-        "```\npython scripts/match.py <주차ID>\n```"
-    )
+    st.warning("정리된 시책 데이터가 없습니다. scripts/match.py 를 먼저 실행하세요.")
     if st.button("🔄 새로고침"):
         reload_catalog()
         st.rerun()
     st.stop()
 
+# 상단 필터: 4컬럼 (월, 주차, 대리점, 새로고침)
+months = sorted(catalog.keys(), reverse=True)
 
-# 사이드바: 월/주차/대리점 선택
-with st.sidebar:
-    st.header("필터")
+col_m, col_w, col_a, col_r = st.columns([1.2, 1.2, 3, 0.8])
 
-    # 월 선택
-    months = sorted(catalog.keys(), reverse=True)
-    selected_month = st.selectbox("월", months, format_func=lambda x: f"{x[:4]}년 {int(x[5:])}월")
-
-    # 주차 선택
-    weeks = sorted(catalog[selected_month].keys(), key=lambda w: int(w.replace("주차", "")))
-    selected_week = st.selectbox("주차", weeks)
-
-    # 대리점 선택
-    agencies = sorted(catalog[selected_month][selected_week].keys())
-    agency_count = len(agencies)
-    st.caption(f"📊 {agency_count}개 대리점")
-
-    selected_agency = st.selectbox(
-        "대리점",
-        ["(전체 보기)"] + agencies,
+with col_m:
+    selected_month = st.selectbox(
+        "월",
+        months,
+        format_func=lambda x: x[:4] + "년 " + str(int(x[5:])) + "월",
+        key="month_sel",
     )
 
-    st.divider()
-    if st.button("🔄 새로고침"):
+weeks = sorted(
+    catalog[selected_month].keys(),
+    key=lambda w: int(w.replace("주차", "")),
+)
+with col_w:
+    selected_week = st.selectbox("주차", weeks, key="week_sel")
+
+# 현재 주차에 존재하는 대리점들의 full_name 리스트 만들기 (short → full)
+short_names = sorted(catalog[selected_month][selected_week].keys())
+full_to_short = {}  # full_name -> short_name (파일 접근용)
+for s in short_names:
+    full = short_to_full(s, alias_map)
+    # 동일 full_name이 여러 short로 들어오면 첫 매핑 유지
+    if full not in full_to_short:
+        full_to_short[full] = s
+full_names_sorted = sorted(full_to_short.keys())
+
+with col_a:
+    options = ["(전체 보기)"] + full_names_sorted
+    selected_full = st.selectbox(
+        "대리점 (" + str(len(full_names_sorted)) + "개)",
+        options,
+        key="agency_sel",
+    )
+
+with col_r:
+    st.write("")  # 라벨 자리 맞춤
+    if st.button("🔄", help="새로고침"):
         reload_catalog()
         st.rerun()
 
-    st.caption("같은 대리점에 여러 시책(지사별/TM/대면 등)이 있으면 모두 표시됩니다.")
-
+st.divider()
 
 # 메인 영역
-year = selected_month[:4]
+year_num = selected_month[:4]
 month_num = int(selected_month[5:])
 week_num = int(selected_week.replace("주차", ""))
 
-st.subheader(f"{year}년 {month_num}월 {week_num}주차 시책")
-
-if selected_agency == "(전체 보기)":
-    # 전체 대리점 목록 표시
-    st.write(f"**전체 {agency_count}개 대리점**")
-    cols_per_row = 4
-    rows = [agencies[i:i + cols_per_row] for i in range(0, len(agencies), cols_per_row)]
+if selected_full == "(전체 보기)":
+    st.subheader(year_num + "년 " + str(month_num) + "월 " + str(week_num) + "주차 — 전체 " + str(len(full_names_sorted)) + "개 대리점")
+    # 반응형 컬럼: 화면 좁으면 자동으로 적게
+    cols_per_row = 3
+    rows = [full_names_sorted[i:i + cols_per_row] for i in range(0, len(full_names_sorted), cols_per_row)]
     for row in rows:
         cols = st.columns(cols_per_row)
-        for col, agency in zip(cols, row):
-            files = catalog[selected_month][selected_week][agency]
+        for col, full in zip(cols, row):
+            short = full_to_short[full]
+            files = catalog[selected_month][selected_week][short]
             with col:
-                st.markdown(f"**{agency}**")
-                # 첫 이미지를 썸네일로
+                st.markdown("**" + full + "**")
                 st.image(str(files[0]), width="stretch")
                 if len(files) > 1:
-                    st.caption(f"+{len(files) - 1}장 더")
+                    st.caption("+" + str(len(files) - 1) + "장 더")
 else:
-    files = catalog[selected_month][selected_week][selected_agency]
-    st.write(f"**{selected_agency}**  ·  {len(files)}장")
+    short = full_to_short[selected_full]
+    files = catalog[selected_month][selected_week][short]
+    st.subheader(selected_full)
+    st.caption(year_num + "년 " + str(month_num) + "월 " + str(week_num) + "주차 · " + str(len(files)) + "장")
 
     if len(files) == 1:
         st.image(str(files[0]), width="stretch")
     else:
-        # 여러 장 - 2열 그리드
         cols_per_row = 2
         rows = [files[i:i + cols_per_row] for i in range(0, len(files), cols_per_row)]
         for row in rows:
             cols = st.columns(cols_per_row)
             for col, fpath in zip(cols, row):
                 with col:
-                    st.image(str(fpath), caption=fpath.name, width="stretch")
+                    st.image(str(fpath), width="stretch")
 
-# 푸터
 st.divider()
-st.caption(
-    "원본 시책 이미지가 정리된 상태로 표시됩니다. "
-    "새 시책을 추가하려면 `scripts/match.py` 실행 후 GitHub에 푸시하세요."
-)
+st.caption("같은 대리점에 여러 시책(지사별/TM/대면 등)이 있으면 모두 표시됩니다.")
