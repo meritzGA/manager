@@ -109,8 +109,25 @@ def short_to_full(short, alias_map):
         return alias_map[short]
     if short.lower() in alias_map:
         return alias_map[short.lower()]
-    # 못 찾으면 그대로 반환
     return short
+
+
+def display_name(full_name):
+    """법인 표기를 제거한 표시용 이름.
+    (주), ㈜, 주식회사 를 앞/뒤에서 제거하고 공백 정리.
+    예: (주)글로벌금융판매 -> 글로벌금융판매
+        굿리치주식회사 -> 굿리치
+        주식회사 메타리치 -> 메타리치
+        메가(주) -> 메가
+    """
+    s = full_name or ""
+    for token in ["(주)", "㈜", "(유)", "(재)"]:
+        s = s.replace(token, "")
+    # "주식회사" 앞뒤 모두 제거 (공백 포함)
+    s = re.sub(r"^\s*주식회사\s*", "", s)
+    s = re.sub(r"\s*주식회사\s*$", "", s)
+    s = re.sub(r"\s*유한회사\s*$", "", s)
+    return s.strip()
 
 
 def reload_catalog():
@@ -153,23 +170,26 @@ weeks = sorted(
 with col_w:
     selected_week = st.selectbox("주차", weeks, key="week_sel")
 
-# 현재 주차에 존재하는 대리점들의 full_name 리스트 만들기 (short → full)
+# 현재 주차에 존재하는 대리점들. 표시는 display_name, 내부 키는 full_name
 short_names = sorted(catalog[selected_month][selected_week].keys())
 full_to_short = {}  # full_name -> short_name (파일 접근용)
 for s in short_names:
     full = short_to_full(s, alias_map)
-    # 동일 full_name이 여러 short로 들어오면 첫 매핑 유지
     if full not in full_to_short:
         full_to_short[full] = s
-full_names_sorted = sorted(full_to_short.keys())
+# 표시명 기준 가나다순 정렬
+agencies_sorted = sorted(full_to_short.keys(), key=lambda f: display_name(f))
+# 표시명 -> full_name 매핑 (드롭다운 선택값을 full로 복원)
+display_to_full = {display_name(f): f for f in agencies_sorted}
 
 with col_a:
-    options = ["(전체 보기)"] + full_names_sorted
-    selected_full = st.selectbox(
-        "대리점 (" + str(len(full_names_sorted)) + "개)",
+    options = ["(전체 보기)"] + [display_name(f) for f in agencies_sorted]
+    selected_display = st.selectbox(
+        "대리점 (" + str(len(agencies_sorted)) + "개)",
         options,
         key="agency_sel",
     )
+selected_full = display_to_full.get(selected_display, selected_display)
 
 with col_r:
     st.write("")  # 라벨 자리 맞춤
@@ -184,25 +204,24 @@ year_num = selected_month[:4]
 month_num = int(selected_month[5:])
 week_num = int(selected_week.replace("주차", ""))
 
-if selected_full == "(전체 보기)":
-    st.subheader(year_num + "년 " + str(month_num) + "월 " + str(week_num) + "주차 — 전체 " + str(len(full_names_sorted)) + "개 대리점")
-    # 반응형 컬럼: 화면 좁으면 자동으로 적게
+if selected_display == "(전체 보기)":
+    st.subheader(year_num + "년 " + str(month_num) + "월 " + str(week_num) + "주차 — 전체 " + str(len(agencies_sorted)) + "개 대리점")
     cols_per_row = 3
-    rows = [full_names_sorted[i:i + cols_per_row] for i in range(0, len(full_names_sorted), cols_per_row)]
+    rows = [agencies_sorted[i:i + cols_per_row] for i in range(0, len(agencies_sorted), cols_per_row)]
     for row in rows:
         cols = st.columns(cols_per_row)
         for col, full in zip(cols, row):
             short = full_to_short[full]
             files = catalog[selected_month][selected_week][short]
             with col:
-                st.markdown("**" + full + "**")
+                st.markdown("**" + display_name(full) + "**")
                 st.image(str(files[0]), width="stretch")
                 if len(files) > 1:
                     st.caption("+" + str(len(files) - 1) + "장 더")
 else:
     short = full_to_short[selected_full]
     files = catalog[selected_month][selected_week][short]
-    st.subheader(selected_full)
+    st.subheader(display_name(selected_full))
     st.caption(year_num + "년 " + str(month_num) + "월 " + str(week_num) + "주차 · " + str(len(files)) + "장")
 
     if len(files) == 1:
