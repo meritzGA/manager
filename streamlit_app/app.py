@@ -23,15 +23,33 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# CSS: 모바일에서 컬럼 간격 줄이고, 사이드바 토글 숨김
+# CSS: 사이드바 + 토글 + 헤더 메뉴까지 모두 숨김, 모바일 패딩 조정
 st.markdown("""
 <style>
-section[data-testid="stSidebar"] { display: none; }
-button[kind="header"] { display: none; }
-.block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+/* 사이드바 본체 제거 */
+section[data-testid="stSidebar"],
+div[data-testid="stSidebar"],
+aside[data-testid="stSidebar"] { display: none !important; width: 0 !important; }
+
+/* 사이드바 열기/닫기 토글 (Streamlit 버전별 셀렉터 모두 커버) */
+button[data-testid="stSidebarCollapseButton"],
+button[data-testid="collapsedControl"],
+div[data-testid="collapsedControl"],
+[data-testid="stSidebarNavCollapseButton"],
+[data-testid="stSidebarHeader"],
+button[kind="header"] { display: none !important; }
+
+/* 상단 우측 햄버거 메뉴 + 배포 버튼 */
+#MainMenu, header [data-testid="stHeader"], header [data-testid="stToolbar"] { display: none !important; }
+
+/* 메인 컨테이너 패딩 */
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 1rem; padding-right: 1rem; }
 @media (max-width: 640px) {
   .block-container { padding-left: 0.6rem; padding-right: 0.6rem; }
 }
+
+/* 사이드바가 차지하던 왼쪽 공백 제거 */
+.main .block-container { max-width: 100% !important; margin-left: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
