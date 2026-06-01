@@ -123,12 +123,23 @@ def filename_korean_match(filename, agencies, threshold=80):
                 continue
             if norm_alias == norm_base:
                 return a['full_name'], 100
-            if norm_alias in norm_base and len(norm_alias) >= 3:
+            # alias가 base에 포함 (예: alias='메가' base='메가기본시상')
+            # 추가 조건: 별칭과 다른 부분이 '기본시상', '추가시상', 'TM', '대면' 같은 부가어인지
+            # 짧은 alias도 허용하되 가산점 차등
+            if norm_alias in norm_base and len(norm_alias) >= 2:
                 ratio_len = len(norm_alias) / len(norm_base)
-                score = 80 + int(15 * ratio_len)
-                if score > best[1]:
-                    best = (a['full_name'], score)
-                continue
+                # 부가어가 흔히 나오는 경우 가산점
+                rest = norm_base.replace(norm_alias, "", 1)
+                bonus_terms = ["기본시상", "추가시상", "추가", "기본", "tm", "대면",
+                               "지사", "본사", "직판", "정규", "cs", "direct", "new"]
+                rest_is_bonus = any(t in rest for t in bonus_terms)
+                if rest_is_bonus or len(norm_alias) >= 3:
+                    score = 80 + int(15 * ratio_len)
+                    if rest_is_bonus and len(norm_alias) >= 2:
+                        score = max(score, 88)  # 부가어 매칭은 안정적
+                    if score > best[1]:
+                        best = (a['full_name'], score)
+                    continue
             if norm_base in norm_alias and len(norm_base) >= 3:
                 ratio_len = len(norm_base) / len(norm_alias)
                 score = 80 + int(10 * ratio_len)
